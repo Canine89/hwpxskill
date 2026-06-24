@@ -6,7 +6,7 @@ description: "한글(HWPX) 문서 생성/읽기/편집 스킬. .hwpx 파일, 한
 # HWPX 문서 스킬 — 레퍼런스 복원 우선(XML-first) 워크플로우
 
 한글(Hancom Office)의 HWPX 파일을 **XML 직접 작성** 중심으로 생성, 편집, 읽기할 수 있는 스킬.
-HWPX는 ZIP 기반 XML 컨테이너(OWPML 표준)이다. python-hwpx API의 서식 버그를 완전히 우회하며, 세밀한 서식 제어가 가능하다.
+HWPX는 ZIP 기반 XML 컨테이너(OWPML 표준)이다. 서식 보존이 중요한 편집에서는 OWPML XML을 직접 다뤄 charPr, paraPr, 표 구조를 세밀하게 제어한다.
 
 ## 기본 동작 모드 (필수): 첨부 HWPX 분석 → 고유 XML 복원(99% 근접) → 요청 반영 재작성
 
@@ -231,7 +231,7 @@ source "$VENV"
 ├── SKILL.md                              # 이 파일
 ├── scripts/
 │   ├── office/
-│   │   ├── unpack.py                     # HWPX → 디렉토리 (XML pretty-print)
+│   │   ├── unpack.py                     # HWPX → 디렉토리 (기본 XML 바이트 보존, --pretty는 검사 전용)
 │   │   └── pack.py                       # 디렉토리 → HWPX
 │   ├── build_hwpx.py                     # 템플릿 + XML → .hwpx 조립 (핵심)
 │   ├── edit_hwpx.py                      # 원본 패키지 보존 + 텍스트/셀 최소 수정
@@ -564,7 +564,7 @@ section0.xml의 첫 문단(`<hp:p>`)의 첫 런(`<hp:run>`)에 반드시 `<hp:se
 ```bash
 source "$VENV"
 
-# 1. HWPX → 디렉토리 (XML pretty-print)
+# 1. HWPX → 디렉토리 (기본값은 XML 바이트 보존)
 python3 "$SKILL_DIR/scripts/office/unpack.py" document.hwpx ./unpacked/
 
 # 2. XML 직접 편집 (Claude가 Read/Edit 도구로)
@@ -577,6 +577,8 @@ python3 "$SKILL_DIR/scripts/office/pack.py" ./unpacked/ edited.hwpx
 # 4. 검증
 python3 "$SKILL_DIR/scripts/validate.py" edited.hwpx
 ```
+
+`unpack.py --pretty`는 사람이 XML을 읽기 좋게 확인할 때만 사용한다. HWPX의 `hp:t`는 텍스트와 `hp:fwSpace`, `hp:lineBreak` 같은 자식 컨트롤이 섞인 mixed content를 가질 수 있고, pretty-print가 삽입한 줄바꿈/공백이 한컴에서 실제 텍스트처럼 렌더링될 수 있다. 따라서 `--pretty`로 푼 디렉토리를 다시 `pack.py` 입력으로 사용하지 않는다.
 
 ---
 
@@ -693,7 +695,7 @@ python3 "$SKILL_DIR/scripts/page_guard.py" \
 |----------|------|
 | `scripts/build_hwpx.py` | **핵심** — 템플릿 + XML → HWPX 조립 |
 | `scripts/analyze_template.py` | HWPX 심층 분석 (레퍼런스 기반 생성의 청사진) |
-| `scripts/office/unpack.py` | HWPX → 디렉토리 (XML pretty-print) |
+| `scripts/office/unpack.py` | HWPX → 디렉토리 (기본 XML 바이트 보존, `--pretty`는 검사 전용) |
 | `scripts/office/pack.py` | 디렉토리 → HWPX (mimetype first) |
 | `scripts/validate.py` | HWPX 파일 구조 검증 |
 | `scripts/page_guard.py` | 레퍼런스 대비 페이지 드리프트 위험 검사 (필수 게이트) |

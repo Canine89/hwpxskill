@@ -2,7 +2,7 @@
 
 한컴오피스 HWPX 문서를 AI 코딩 에이전트에서 다룰 수 있게 해주는 스킬입니다.
 
-python-hwpx API를 쓰면 버그가 많아서, XML을 직접 건드리는 방식을 택했습니다. 덕분에 기존 문서의 서식이나 구조를 거의 그대로 유지하면서 내용만 갈아끼울 수 있습니다.
+서식 보존이 중요한 편집에서는 OWPML XML을 직접 다루는 방식을 택했습니다. 덕분에 기존 문서의 서식이나 구조를 거의 그대로 유지하면서 내용만 갈아끼울 수 있습니다.
 
 ## 뭘 할 수 있나
 
@@ -147,12 +147,18 @@ python3 scripts/page_guard.py \
 
 `edit_hwpx.py`는 새 ZIP을 일반 재압축하지 않고 원본 ZIP의 로컬 헤더와 압축 데이터를 복사합니다. 변경 대상인 `Contents/section0.xml`만 교체하고, 나머지 엔트리는 CRC, compressed size, flag bits, 날짜, 속성까지 원본과 같게 유지합니다. `section0.xml`도 원본 XML 선언과 줄바꿈 관습을 최대한 유지합니다.
 
-직접 XML을 확인해야 할 때만 HWPX를 풀고 다시 묶습니다.
+직접 XML을 확인해야 할 때만 HWPX를 풀고 다시 묶습니다. 기본 `unpack.py`는 XML을 원본 바이트 그대로 추출합니다. `hp:t`처럼 텍스트와 `hp:fwSpace`, `hp:lineBreak` 같은 자식 컨트롤이 섞인 mixed content 안에 들여쓰기 공백이 들어가면 한컴에서 실제 텍스트처럼 렌더링될 수 있기 때문입니다.
 
 ```bash
 python3 scripts/office/unpack.py document.hwpx ./unpacked/
 # XML 수정
 python3 scripts/office/pack.py ./unpacked/ edited.hwpx
+```
+
+XML을 사람이 읽기 좋게 확인해야 할 때만 `--pretty`를 사용합니다. 이 결과물은 검사 전용이며 다시 `pack.py` 입력으로 쓰지 않습니다.
+
+```bash
+python3 scripts/office/unpack.py document.hwpx ./inspect/ --pretty
 ```
 
 ### 3. 텍스트 추출
@@ -223,7 +229,7 @@ python3 -m unittest tests/test_hwpx_guards.py
 | `build_hwpx.py` | 템플릿 + XML 조합해서 HWPX 생성 |
 | `edit_hwpx.py` | 원본 양식을 보존하며 텍스트/표 셀만 수정 |
 | `analyze_template.py` | 레퍼런스 HWPX 분석 |
-| `office/unpack.py` | HWPX를 디렉토리로 풀기 |
+| `office/unpack.py` | HWPX를 디렉토리로 풀기, 기본값은 XML 바이트 보존 |
 | `office/pack.py` | 디렉토리를 HWPX로 묶기 |
 | `validate.py` | HWPX 구조, manifest, 이미지 참조 검증 |
 | `page_guard.py` | 원본 대비 페이지 드리프트 위험 감지, 문단/셀별 글자 예산 검증 |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unpack an HWPX file into a directory with pretty-printed XML.
+"""Unpack an HWPX file into a directory.
 
 Usage:
     python unpack.py input.hwpx output_dir/
@@ -14,8 +14,24 @@ from zipfile import ZipFile
 from lxml import etree
 
 
-def unpack(hwpx_path: str, output_dir: str) -> None:
-    """Extract HWPX archive and pretty-print all XML files."""
+def _pretty_print_xml(data: bytes) -> bytes:
+    tree = etree.fromstring(data)
+    etree.indent(tree, space="  ")
+    return etree.tostring(
+        tree,
+        pretty_print=True,
+        xml_declaration=True,
+        encoding="UTF-8",
+    )
+
+
+def unpack(hwpx_path: str, output_dir: str, *, pretty: bool = False) -> None:
+    """Extract HWPX archive.
+
+    By default this writes archive entries byte-for-byte. HWPX XML can contain
+    mixed content such as hp:t text with child controls, so inserting pretty
+    print whitespace can change rendered document text.
+    """
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -26,17 +42,9 @@ def unpack(hwpx_path: str, output_dir: str) -> None:
             dest = output / entry
             dest.parent.mkdir(parents=True, exist_ok=True)
 
-            if entry.endswith(".xml") or entry.endswith(".hpf"):
+            if pretty and (entry.endswith(".xml") or entry.endswith(".hpf")):
                 try:
-                    tree = etree.fromstring(data)
-                    etree.indent(tree, space="  ")
-                    pretty = etree.tostring(
-                        tree,
-                        pretty_print=True,
-                        xml_declaration=True,
-                        encoding="UTF-8",
-                    )
-                    dest.write_bytes(pretty)
+                    dest.write_bytes(_pretty_print_xml(data))
                     continue
                 except etree.XMLSyntaxError:
                     pass  # Fall through to raw write
@@ -45,21 +53,28 @@ def unpack(hwpx_path: str, output_dir: str) -> None:
 
     print(f"Unpacked: {hwpx_path} -> {output_dir}")
     print(f"  Files: {len(list(output.rglob('*')))} entries")
+    if pretty:
+        print("  Warning: --pretty output is for inspection only; do not pack it back into HWPX.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Unpack HWPX file into a directory with pretty-printed XML"
+        description="Unpack HWPX file into a directory"
     )
     parser.add_argument("input", help="Path to .hwpx file")
     parser.add_argument("output", help="Output directory path")
+    parser.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Pretty-print XML for inspection only. This can alter HWPX mixed-content whitespace.",
+    )
     args = parser.parse_args()
 
     if not os.path.isfile(args.input):
         print(f"Error: File not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    unpack(args.input, args.output)
+    unpack(args.input, args.output, pretty=args.pretty)
 
 
 if __name__ == "__main__":

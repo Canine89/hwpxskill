@@ -18,6 +18,8 @@ sys.path.insert(0, str(SCRIPTS))
 import edit_hwpx  # noqa: E402
 import content_guard  # noqa: E402
 import page_guard  # noqa: E402
+from office import pack as office_pack  # noqa: E402
+from office import unpack as office_unpack  # noqa: E402
 
 NS = {"hp": "http://www.hancom.co.kr/hwpml/2011/paragraph"}
 FIXTURE = ROOT / "251211_2026년_고용노동부_업무보고_보도자료(수정).hwpx"
@@ -36,6 +38,31 @@ def linesegarray_count(hwpx_path: Path) -> int:
 
 
 class HwpxGuardTests(unittest.TestCase):
+    def test_office_unpack_default_preserves_xml_mixed_content_bytes(self) -> None:
+        section = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" '
+            b'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+            b'<hp:p><hp:run><hp:t>Item<hp:fwSpace/>text</hp:t></hp:run></hp:p>'
+            b'</hs:sec>'
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.hwpx"
+            unpacked = Path(tmp) / "unpacked"
+            repacked = Path(tmp) / "repacked.hwpx"
+
+            with ZipFile(source, "w") as zf:
+                zf.writestr("mimetype", b"application/hwp+zip")
+                zf.writestr("Contents/section0.xml", section)
+
+            office_unpack.unpack(str(source), str(unpacked))
+            self.assertEqual(section, (unpacked / "Contents/section0.xml").read_bytes())
+
+            office_pack.pack(str(unpacked), str(repacked))
+            with ZipFile(repacked, "r") as zf:
+                self.assertEqual(section, zf.read("Contents/section0.xml"))
+
     def test_section_xml_noop_roundtrip_is_byte_identical(self) -> None:
         with ZipFile(FIXTURE, "r") as zf:
             source = zf.read("Contents/section0.xml")
