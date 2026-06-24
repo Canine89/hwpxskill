@@ -7,6 +7,8 @@ Checks:
   - mimetype content is correct
   - mimetype is the first ZIP entry and stored without compression
   - All XML files are well-formed
+  - content.hpf manifest hrefs exist in the package
+  - section image references point to manifest items
 
 Usage:
     python validate.py document.hwpx
@@ -27,6 +29,11 @@ REQUIRED_FILES = [
 ]
 
 EXPECTED_MIMETYPE = "application/hwp+zip"
+
+NS = {
+    "opf": "http://www.idpf.org/2007/opf/",
+    "hc": "http://www.hancom.co.kr/hwpml/2011/core",
+}
 
 
 def validate(hwpx_path: str) -> list[str]:
@@ -76,14 +83,37 @@ def validate(hwpx_path: str) -> list[str]:
                     f"got compress_type={info.compress_type}"
                 )
 
+        parsed_xml: dict[str, etree._Element] = {}
+
         # Check XML well-formedness
         for name in names:
             if name.endswith(".xml") or name.endswith(".hpf"):
                 try:
                     data = zf.read(name)
-                    etree.fromstring(data)
+                    parsed_xml[name] = etree.fromstring(data)
                 except etree.XMLSyntaxError as e:
                     errors.append(f"Malformed XML in {name}: {e}")
+
+        content = parsed_xml.get("Contents/content.hpf")
+        if content is not None:
+            manifest_ids: set[str] = set()
+            for item in content.xpath(".//opf:item", namespaces=NS):
+                item_id = item.get("id", "")
+                href = item.get("href", "")
+                if item_id:
+                    manifest_ids.add(item_id)
+                if href and href not in names:
+                    errors.append(f"content.hpf references missing file: {href}")
+
+            for section_name, section_root in parsed_xml.items():
+                if not section_name.startswith("Contents/section"):
+                    continue
+                for img in section_root.xpath(".//hc:img", namespaces=NS):
+                    ref = img.get("binaryItemIDRef", "")
+                    if ref and ref not in manifest_ids:
+                        errors.append(
+                            f"{section_name} image references missing manifest item: {ref}"
+                        )
 
     return errors
 

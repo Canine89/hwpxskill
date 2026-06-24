@@ -57,6 +57,36 @@ document.hwpx (ZIP archive)
 </hs:sec>
 ```
 
+## 양식 보존 편집 원칙
+
+사용자가 제공한 HWPX 양식을 채울 때는 새 문서를 재조립하기보다 원본 ZIP 패키지를 복제하고 `Contents/section0.xml`의 텍스트만 최소 수정하는 것이 안전하다.
+
+보존해야 하는 항목:
+
+- `Contents/header.xml`: `charPrIDRef`, `paraPrIDRef`, `styleIDRef`, `borderFillIDRef`의 참조 대상
+- `Contents/content.hpf`: `header`, `section*`, `BinData/*` 매니페스트
+- `BinData/*`: `hc:img binaryItemIDRef`가 참조하는 이미지 원본
+- 표 구조: `hp:tbl`, `hp:tr`, `hp:tc`, `cellAddr`, `cellSpan`, `cellSz`, `cellMargin`
+- 섹션/페이지 구조: `hp:secPr`, `hp:pagePr`, `pageBreak`, `columnBreak`
+
+수정해도 되는 기본 대상:
+
+- `hp:t` 텍스트 값
+- 빈 입력칸에 기존 `hp:run`을 유지한 채 추가하는 `hp:t`
+
+주의할 점:
+
+- 빈 셀은 `hp:run`만 있고 `hp:t`가 없을 수 있다.
+- 표 셀 안의 텍스트도 `hp:tc > hp:subList > hp:p > hp:run > hp:t` 구조다.
+- `hp:t` 안에는 `hp:fwSpace`, `hp:lineBreak` 같은 자식 컨트롤이 들어갈 수 있다.
+- `hp:t` 텍스트를 교체할 때 자식 컨트롤 태그를 삭제하면 한컴에서 손상 문서로 판단할 수 있다.
+- 자식 컨트롤은 유지하고 `hp:t.text`와 자식 컨트롤의 `tail` 텍스트만 수정한다.
+- `hp:p` 하위 `hp:linesegarray`는 문단 줄 배치 캐시다. 텍스트를 바꾼 뒤에는 기존 캐시가 무효가 되므로 제거해서 한컴이 다시 계산하게 한다.
+- 실무 본문 재작성은 기존 `hp:run` 조각에 새 문장을 길이별로 쪼개 넣지 않는다. 그렇게 하면 원본의 볼드/강조가 새 문장 중간에 묻어 들어간다. 문단 전체를 교체할 때는 `header.xml`의 `hh:charPr`를 읽어 볼드/색상/밑줄이 적고, 그 문단에서 비강조 텍스트가 가장 많이 쓰는 글자 높이에 가까운 run을 선택한다. `hh:strikeout shape="3D"`는 일반 본문 charPr에도 붙을 수 있어 단독 배제 기준으로 쓰지 않는다.
+- 본문은 원본 문단 예산 이하의 자연문으로 다시 쓰고, 이름/날짜/전화번호/직책 같은 짧은 필드만 정확 길이 제약을 적용한다.
+- 구조 fingerprint가 통과해도 내용 완성도가 보장되지는 않는다. 기관/국가/브랜드를 바꾸는 작업은 `content_guard.py`로 이전 명칭, 이전 담당자, 이전 전화번호, placeholder 잔재를 별도 검사해야 한다.
+- 이미지 문서는 `section0.xml`의 `hc:img binaryItemIDRef="image1"`와 `content.hpf`의 `<opf:item id="image1" href="BinData/...">`가 함께 맞아야 한다.
+
 ### 문단 (Paragraph)
 
 ```xml

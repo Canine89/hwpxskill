@@ -10,6 +10,15 @@ python-hwpx API를 쓰면 버그가 많아서, XML을 직접 건드리는 방식
 
 OWPML 표준 XML을 직접 다루기 때문에 charPr, paraPr 단위로 서식을 제어할 수 있습니다. Claude Code, Cursor, Codex CLI에서 모두 동작합니다.
 
+## 주요 업데이트
+
+- 기존 HWPX 양식을 그대로 쓰는 `edit_hwpx.py` 편집 경로를 강화했습니다. 일반 ZIP 재압축 대신 원본 로컬 헤더와 압축 데이터를 보존하고, 변경된 `Contents/section0.xml`만 교체합니다.
+- `hwpx_slots.py`를 추가해 편집 가능한 문단/표 셀 슬롯을 먼저 추출하고 `--slot-json`으로 채우는 흐름을 지원합니다. 표, 그림, 텍스트상자 컨테이너 문단은 직접 수정하지 않습니다.
+- 텍스트 수정 문단의 `hp:linesegarray` 줄 배치 캐시는 제거해 한컴의 손상/변조 경고 가능성을 줄입니다.
+- 문단 전체 재작성 시 원본의 볼드/색상 강조가 새 문장에 섞이지 않도록 `header.xml`의 `charPr`를 분석합니다. 첫 run이나 10pt에 가까운 run을 무조건 고르지 않고, 해당 문단에서 가장 많이 쓰인 본문 글자 높이에 가까운 비강조 run을 선택합니다.
+- `content_guard.py`를 추가해 구조 검증만으로 잡히지 않는 원문 잔재, placeholder, 필수 키워드 누락, 전면 재작성 시 원본 문장 과다 잔존을 검사합니다.
+- `page_guard.py`는 문단/셀별 글자 예산과 XML 구조 fingerprint를 함께 비교합니다. `hp:t` 내부 컨트롤은 보존하고, `hp:linesegarray` 제거는 허용합니다.
+
 ## 설치
 
 Agent Skills 표준을 따르고 있어서, 어떤 도구든 스킬 디렉토리에 넣기만 하면 됩니다.
@@ -74,7 +83,71 @@ python3 scripts/build_hwpx.py --template gonmun --output result.hwpx
 
 ### 2. 기존 문서 편집
 
-HWPX를 풀고, XML 고치고, 다시 묶습니다.
+양식을 유지하면서 텍스트나 표 셀만 바꿀 때는 `edit_hwpx.py`를 씁니다. 원본 ZIP 패키지, `header.xml`, `content.hpf`, `BinData`, 표 크기, 셀 병합, 서식 참조를 그대로 두고 `Contents/section0.xml`의 텍스트 노드만 최소 수정합니다.
+
+```bash
+python3 scripts/edit_hwpx.py reference.hwpx \
+  --output filled.hwpx \
+  --replace "{{기관명}}=고용노동부" \
+  --cell "0,2,1=테스트 법인"
+
+python3 scripts/hwpx_slots.py reference.hwpx \
+  --output reference.slots.json
+
+python3 scripts/edit_hwpx.py reference.hwpx \
+  --output rewritten.hwpx \
+  --slot-json values.json
+
+python3 scripts/validate.py filled.hwpx
+python3 scripts/page_guard.py \
+  --reference reference.hwpx \
+  --output filled.hwpx \
+  --no-strict-paragraph-budget \
+  --skip-text-drift \
+  --allow-empty-fill
+
+python3 scripts/content_guard.py filled.hwpx \
+  --forbid "고용노동부" \
+  --forbid "044-" \
+  --require "미국노동부"
+
+python3 scripts/content_guard.py rewritten.hwpx \
+  --reference reference.hwpx \
+  --rules content.rules.json \
+  --max-unchanged-ratio 0.35
+```
+
+좌표는 0부터 시작합니다. `--cell "row,col=값"`은 첫 번째 표를 대상으로 하고, `--cell "table,row,col=값"`은 특정 표를 대상으로 합니다.
+
+본문을 실무적으로 고쳐 쓰는 경우에는 먼저 `hwpx_slots.py`로 편집 가능한 슬롯을 뽑고, `--slot-json`으로 값을 넣습니다. 이 경로는 표/그림/텍스트상자 컨테이너 문단을 직접 건드리지 않아 새 텍스트가 기존 텍스트와 겹치는 문제를 줄입니다. 문단 전체를 바꿀 때는 `header.xml`의 `charPr`를 보고 볼드/색상 강조가 적고, 해당 문단에서 가장 많이 쓰인 본문 글자 높이에 가까운 run을 골라 새 문장을 넣습니다. 본문은 원본 문단 예산 이하로 짧게 다시 써야 하며, 글자 수를 정확히 맞추려고 띄어쓰기를 제거하거나 문장을 중간에서 자르면 안 됩니다.
+
+글자 수까지 더 엄격히 맞추려면 먼저 원본 양식의 예산 프로파일을 만듭니다. 이 파일에는 문단/셀별 기존 글자 수와 셀 폭 기반 입력 가능 글자 수가 저장됩니다.
+
+```bash
+python3 scripts/page_guard.py \
+  --reference reference.hwpx \
+  --write-budget reference.budget.json \
+  --write-structure reference.structure.json
+
+python3 scripts/page_guard.py \
+  --reference reference.hwpx \
+  --output filled.hwpx \
+  --budget-profile reference.budget.json \
+  --structure-profile reference.structure.json \
+  --no-strict-paragraph-budget \
+  --skip-text-drift \
+  --allow-empty-fill
+```
+
+이 검사는 표 구조가 같더라도 특정 셀의 글자 수가 원본 셀 예산을 넘으면 실패합니다. 본문 문단은 `--no-strict-paragraph-budget --skip-text-drift`를 사용해 정확 일치가 아니라 예산 이하와 구조 보존 여부를 봅니다. `--write-structure`는 패키지 파일 목록/순서, 압축 방식, 날짜, 생성 시스템, 파일 속성, 바이너리 해시, XML 태그/속성/순서를 저장하고 결과 문서와 대조합니다. `hp:t`의 텍스트 값은 내용 입력 대상으로 제외하지만, `hp:t` 안의 `hp:fwSpace`, `hp:lineBreak` 같은 자식 컨트롤 태그와 순서는 반드시 보존해야 합니다. 반대로 문단 하위 `hp:linesegarray`는 한컴이 저장한 줄 배치 캐시이므로 텍스트를 바꾼 문단에서는 제거합니다.
+
+구조 검사를 통과해도 원문 기관명, 담당자, 전화번호, `○○` placeholder가 남아 있으면 실무 결과물이 아닙니다. 그런 경우 `content_guard.py`로 금지어와 필수어를 검사합니다. 예를 들어 보도자료를 미국노동부 문서로 바꿨다면 `고용노동부`, 기존 담당자명, `044-` 연락처를 금지하고 `미국노동부`를 필수어로 둡니다.
+
+문서 전체 관점 전환이나 전면 재작성이라면 `--reference`와 `--max-unchanged-ratio`도 같이 씁니다. 원본의 긴 문장이 많이 남은 결과물은 구조가 정상이더라도 실패로 봅니다.
+
+`edit_hwpx.py`는 새 ZIP을 일반 재압축하지 않고 원본 ZIP의 로컬 헤더와 압축 데이터를 복사합니다. 변경 대상인 `Contents/section0.xml`만 교체하고, 나머지 엔트리는 CRC, compressed size, flag bits, 날짜, 속성까지 원본과 같게 유지합니다. `section0.xml`도 원본 XML 선언과 줄바꿈 관습을 최대한 유지합니다.
+
+직접 XML을 확인해야 할 때만 HWPX를 풀고 다시 묶습니다.
 
 ```bash
 python3 scripts/office/unpack.py document.hwpx ./unpacked/
@@ -119,6 +192,14 @@ python3 scripts/validate.py result.hwpx
 python3 scripts/page_guard.py --reference reference.hwpx --output result.hwpx
 ```
 
+### 6. 회귀 테스트
+
+`hp:t` 내부 컨트롤 삭제처럼 한컴에서 손상으로 이어지는 변경을 막는 테스트입니다.
+
+```bash
+python3 -m unittest tests/test_hwpx_guards.py
+```
+
 ## 템플릿
 
 | 템플릿 | 용도 | 특징 |
@@ -140,12 +221,13 @@ python3 scripts/page_guard.py --reference reference.hwpx --output result.hwpx
 | 스크립트 | 하는 일 |
 |----------|---------|
 | `build_hwpx.py` | 템플릿 + XML 조합해서 HWPX 생성 |
+| `edit_hwpx.py` | 원본 양식을 보존하며 텍스트/표 셀만 수정 |
 | `analyze_template.py` | 레퍼런스 HWPX 분석 |
 | `office/unpack.py` | HWPX를 디렉토리로 풀기 |
 | `office/pack.py` | 디렉토리를 HWPX로 묶기 |
-| `validate.py` | HWPX 구조 검증 |
-| `page_guard.py` | 원본 대비 페이지 수 변동 감지 |
-| `text_extract.py` | 텍스트 추출 |
+| `validate.py` | HWPX 구조, manifest, 이미지 참조 검증 |
+| `page_guard.py` | 원본 대비 페이지 드리프트 위험 감지, 문단/셀별 글자 예산 검증 |
+| `text_extract.py` | XML 직접 파싱 기반 텍스트 추출 |
 
 ## 자세한 사용법
 

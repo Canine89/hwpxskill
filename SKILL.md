@@ -13,11 +13,12 @@ HWPX는 ZIP 기반 XML 컨테이너(OWPML 표준)이다. python-hwpx API의 서�
 사용자가 `.hwpx`를 첨부한 경우, 이 스킬은 아래 순서를 **기본값**으로 따른다.
 
 1. **레퍼런스 확보**: 첨부된 HWPX를 기준 문서로 사용
-2. **심층 분석/추출**: `analyze_template.py`로 `header.xml`, `section0.xml` 추출
-3. **구조 복원**: header 스타일 ID/표 구조/셀 병합/여백/문단 흐름을 최대한 동일하게 유지
-4. **요청 반영 재작성**: 사용자가 요구한 텍스트/데이터만 교체하고 구조는 보존
-5. **빌드/검증**: `build_hwpx.py` + `validate.py`로 결과 산출 및 무결성 확인
-6. **쪽수 가드(필수)**: `page_guard.py`로 레퍼런스 대비 페이지 드리프트 위험 검사
+2. **슬롯 추출**: `hwpx_slots.py`로 편집 가능한 문단/셀 슬롯 목록을 JSON으로 만든다
+3. **사용자 값 매핑**: 슬롯 키(`p:12`, `cell:0:2:1`)에 새 값을 매핑한다
+4. **구조 보존 편집**: `edit_hwpx.py --slot-json`으로 원본 패키지를 복제하고 슬롯 텍스트만 수정
+5. **빌드/검증**: `edit_hwpx.py` 결과 또는 `build_hwpx.py` 결과를 `validate.py`로 무결성 확인
+6. **글자 예산/쪽수 가드(필수)**: `page_guard.py`로 문단/셀별 글자 예산과 레퍼런스 대비 페이지 드리프트 위험 검사
+7. **내용 완성도 가드(필수)**: `content_guard.py`로 원문 잔재, placeholder, 필수 키워드 누락을 검사한다
 
 ### 99% 근접 복원 기준 (실무 체크리스트)
 
@@ -26,14 +27,15 @@ HWPX는 ZIP 기반 XML 컨테이너(OWPML 표준)이다. python-hwpx API의 서�
 - 문단 순서, 문단 수, 주요 빈 줄/구획 위치 동일
 - 페이지/여백/섹션(secPr) 동일
 - 변경은 사용자 요청 범위(본문 텍스트, 값, 항목명 등)로 제한
+- 내용 변경 요청이 문서 전체의 관점 전환(예: 한국 기관 → 미국 기관, 특정 회사 → 다른 회사)이라면 이전 기관명/담당자/전화번호/정책명 잔재가 남으면 실패
 
 ### 쪽수 동일(100%) 필수 기준
 
 - 사용자가 레퍼런스를 제공한 경우 **결과 문서의 최종 쪽수는 레퍼런스와 동일해야 한다**
 - 쪽수가 늘어날 가능성이 보이면 먼저 텍스트를 압축/요약해서 기존 레이아웃에 맞춘다
 - 사용자 명시 요청 없이 `hp:p`, `hp:tbl`, `rowCnt`, `colCnt`, `pageBreak`, `secPr`를 변경하지 않는다
-- `validate.py` 통과만으로 완료 처리하지 않는다. 반드시 `page_guard.py`도 통과해야 한다
-- `page_guard.py` 실패 시 결과를 완료로 제출하지 않고, 원인(길이 과다/구조 변경)을 수정 후 재빌드한다
+- `validate.py` 통과만으로 완료 처리하지 않는다. 반드시 `page_guard.py`와 `content_guard.py`도 통과해야 한다
+- `page_guard.py` 또는 `content_guard.py` 실패 시 결과를 완료로 제출하지 않고, 원인(길이 과다/구조 변경/원문 잔재/필수 키워드 누락)을 수정 후 재빌드한다
 - 가능하면 한글(또는 사용자의 확인) 기준 최종 쪽수 값을 확인하고 레퍼런스와 일치 여부를 재확인한다
 
 ### 기본 실행 명령 (첨부 레퍼런스가 있을 때)
@@ -46,23 +48,164 @@ python3 "$SKILL_DIR/scripts/analyze_template.py" reference.hwpx \
   --extract-header /tmp/ref_header.xml \
   --extract-section /tmp/ref_section.xml
 
-# 2) /tmp/ref_section.xml을 복제해 /tmp/new_section0.xml 작성
-#    (구조 유지, 텍스트/데이터만 요청에 맞게 수정)
+# 2) 편집 가능한 슬롯 추출
+python3 "$SKILL_DIR/scripts/hwpx_slots.py" reference.hwpx \
+  --output /tmp/reference.slots.json
 
-# 3) 복원 빌드
-python3 "$SKILL_DIR/scripts/build_hwpx.py" \
-  --header /tmp/ref_header.xml \
-  --section /tmp/new_section0.xml \
-  --output result.hwpx
-
-# 4) 검증
-python3 "$SKILL_DIR/scripts/validate.py" result.hwpx
-
-# 5) 쪽수 드리프트 가드 (필수)
+# 3) 원본 양식의 문단/셀별 글자 예산 저장
 python3 "$SKILL_DIR/scripts/page_guard.py" \
   --reference reference.hwpx \
-  --output result.hwpx
+  --write-budget /tmp/reference.budget.json \
+  --write-structure /tmp/reference.structure.json
+
+# 3-1) 내용 완성도 규칙 작성
+# 예: 한국 고용노동부 보도자료를 미국노동부 문서로 바꾸는 경우
+cat > /tmp/content.rules.json <<'JSON'
+{
+  "require": ["미국노동부"],
+  "forbid": ["고용노동부", "김영훈", "044-"],
+  "forbid_regex": ["○○+", "\\.\\s*\\.\\s*\\."]
+}
+JSON
+
+# 4) 양식 보존 편집
+python3 "$SKILL_DIR/scripts/edit_hwpx.py" reference.hwpx \
+  --output result.hwpx \
+  --slot-json values.json
+
+# 5) 검증
+python3 "$SKILL_DIR/scripts/validate.py" result.hwpx
+
+# 6) 글자 예산 + 쪽수 드리프트 가드 (필수)
+python3 "$SKILL_DIR/scripts/page_guard.py" \
+  --reference reference.hwpx \
+  --output result.hwpx \
+  --budget-profile /tmp/reference.budget.json \
+  --structure-profile /tmp/reference.structure.json \
+  --no-strict-paragraph-budget \
+  --skip-text-drift \
+  --allow-empty-fill
+
+# 7) 내용 완성도 가드 (필수)
+python3 "$SKILL_DIR/scripts/content_guard.py" result.hwpx \
+  --rules /tmp/content.rules.json
+
+# 문서 전체 관점 전환/전면 재작성인 경우 원본 긴 문장 잔존율도 제한
+python3 "$SKILL_DIR/scripts/content_guard.py" result.hwpx \
+  --reference reference.hwpx \
+  --rules /tmp/content.rules.json \
+  --max-unchanged-ratio 0.35
 ```
+
+`hwpx_slots.py`는 표/그림/텍스트상자를 품은 컨테이너 문단을 제외하고, 실제 편집 가능한 문단과 표 셀을 슬롯으로 노출한다. 사용자는 슬롯 키에 값만 넣으면 된다.
+
+`edit_hwpx.py`는 `mimetype`, `content.hpf`, `header.xml`, `settings.xml`, `Preview/*`, `BinData/*`를 원본에서 그대로 복제한다. 수정 대상은 기본적으로 `Contents/section0.xml` 내부의 슬롯 텍스트뿐이다. 따라서 사용자가 기존 양식을 제공했고 텍스트/셀 채우기만 필요하다면 `build_hwpx.py`보다 `edit_hwpx.py --slot-json`을 우선한다.
+
+패키징은 일반 ZIP 재압축을 금지한다. 원본 ZIP의 로컬 헤더와 압축 데이터를 그대로 복사하고, 변경 대상 엔트리만 교체한다. 변경하지 않은 엔트리는 CRC, compressed size, file size, flag bits, 압축 방식, 날짜, 생성 시스템, 외부/내부 속성이 원본과 같아야 한다.
+
+### `edit_hwpx.py` 사용 규칙
+
+```bash
+# 전체 텍스트 치환
+python3 "$SKILL_DIR/scripts/edit_hwpx.py" form.hwpx \
+  -o out.hwpx \
+  --replace "기존문구=새문구"
+
+# JSON 매핑 치환
+python3 "$SKILL_DIR/scripts/edit_hwpx.py" form.hwpx \
+  -o out.hwpx \
+  --replace-json values.json
+
+# 표 셀 채우기: row,col은 0부터 시작, table 생략 시 첫 번째 표
+python3 "$SKILL_DIR/scripts/edit_hwpx.py" form.hwpx \
+  -o out.hwpx \
+  --cell "0,2,1=테스트 법인"
+
+# 본문 문단 재작성: 문장 품질을 우선하고 원본 문단 예산 이하로만 제한
+python3 "$SKILL_DIR/scripts/edit_hwpx.py" form.hwpx \
+  -o out.hwpx \
+  --paragraph-json paragraphs.json
+
+# 권장: 슬롯 키 기반 채우기
+python3 "$SKILL_DIR/scripts/hwpx_slots.py" form.hwpx -o slots.json
+python3 "$SKILL_DIR/scripts/edit_hwpx.py" form.hwpx \
+  -o out.hwpx \
+  --slot-json values.json
+```
+
+- `--replace`는 먼저 개별 `hp:t` 안에서 치환해 런 서식을 최대한 유지한다.
+- 치환 대상이 여러 런에 나뉘어 있으면 문단 단위로 합치되, 첫 번째 런을 무조건 쓰지 않는다. `header.xml`의 `charPr`를 확인해 볼드/색상/밑줄 같은 강조가 적고, 해당 문단 안에서 비강조 텍스트가 가장 많이 쓰는 글자 높이에 가까운 주 런을 선택한다.
+- `--cell`은 해당 `hp:tc` 안의 첫 번째 런 서식을 유지하고 텍스트만 넣는다.
+- `--paragraph`/`--paragraph-json`은 실무 본문 재작성용이다. 기존 문장을 여러 런에 기계적으로 쪼개지 않고 문단의 주 텍스트 런 하나에 자연문으로 넣는다. 주 런은 글자 수만 보지 않고 `charPrIDRef`의 볼드/색상/밑줄과 문단 내 지배적 본문 높이로 고른다.
+- `hh:strikeout shape="3D"` 같은 값은 일부 HWPX에서 일반 본문 charPr에도 붙어 있다. 실제 취소선 렌더링이 명확하지 않으면 단독으로 강조/배제 기준으로 쓰지 않는다.
+- `--slot`/`--slot-json`은 기본 인터페이스다. 슬롯 키는 `hwpx_slots.py`가 생성한 것만 사용한다.
+- `--paragraph` 대상은 직접 `hp:run/hp:t`를 가진 실제 텍스트 문단이어야 한다. 표/그림/텍스트상자를 품은 컨테이너 문단은 직접 수정하지 않는다. 컨테이너를 수정하면 내부 텍스트와 새 텍스트가 겹쳐 렌더링된다.
+- 빈 입력 셀처럼 `hp:run`은 있으나 `hp:t`가 없는 경우에는 기존 런 안에 `hp:t`만 추가한다.
+- `hp:t` 내부의 `hp:fwSpace`, `hp:lineBreak`, 기타 자식 컨트롤은 절대 삭제하지 않는다. 텍스트를 비울 때도 자식 태그는 유지하고 `text/tail`만 비운다.
+- 텍스트를 바꾼 문단의 `hp:linesegarray`는 제거한다. 이 태그는 문단 줄 배치 캐시라서 본문 수정 뒤 보존하면 한컴에서 손상/변조 경고를 낼 수 있다.
+- `hp:tbl`, `hp:tr`, `hp:tc`, `cellAddr`, `cellSpan`, `cellSz`, `cellMargin`, `borderFillIDRef`는 변경하지 않는다.
+
+### 실무 입력 품질 규칙
+
+본문 문단은 맞춤법과 띄어쓰기가 우선이다. 양식을 보존하려고 `정부는현장점검과공개보고...`처럼 공백을 제거하거나 문장을 중간에서 자르지 않는다.
+
+- 본문 재작성은 `--paragraph-json`을 사용한다.
+- 문단 인덱스를 고를 때 `analyze_template.py` 또는 텍스트 추출 결과에서 컨테이너 문단이 아니라 내부 실제 텍스트 문단을 고른다. 예를 들어 상단 표 전체 문단이 아니라 표 셀 안의 기관명/제목 문단을 수정한다.
+- 본문은 원본 문단의 공백 제외 글자 수 이하로 짧게 다시 쓴다. 원본과 정확히 같은 글자 수로 억지 보강하지 않는다.
+- 이름, 날짜, 전화번호, 직책, 금액, 짧은 표 셀 같은 필드만 정확 길이/셀 예산을 엄격 적용한다.
+- 과도하게 긴 무공백 한글 문자열은 `edit_hwpx.py`의 기본 품질 가드에서 실패한다. 정상 문장이 아니라면 결과를 제출하지 않는다.
+- 원본 런의 볼드/강조가 본문 새 문장 중간에 묻어 들어가면 실패다. 본문은 `--paragraph` 계열로 단일 주 런에 넣고, 제목/소제목처럼 의도된 강조만 원본 스타일을 유지한다.
+- 원본보다 글자 크기가 달라 보이면 `header.xml`이 바뀐 것인지, 새 텍스트가 다른 `charPrIDRef`에 들어간 것인지 먼저 비교한다. `header.xml`이 같아도 14pt 본문 대신 12pt 괄호/각주 run을 선택하면 표시 서체가 달라진다.
+
+### 글자 예산 가드 규칙
+
+`page_guard.py --write-budget`는 원본 양식에서 다음 예산을 계산한다.
+
+- 일반 문단: 직접 `hp:run/hp:t` 텍스트의 공백 제외 글자 수
+- 표 셀: 셀 내부 전체 `hp:t` 텍스트의 공백 제외 글자 수와 셀 폭/글자 크기 기반 추정 수용량 중 큰 값
+- 빈 입력 셀: 기존 셀 폭과 첫 런의 `charPrIDRef` 글자 크기를 이용해 보수적 수용량 산정
+
+결과 검증 시 `--budget-profile`을 반드시 사용한다. 실무 본문 재작성 결과는 `--no-strict-paragraph-budget --skip-text-drift`를 함께 사용해 원본 글자 수 “일치”가 아니라 예산 이하와 구조 보존 여부를 본다. 표 셀과 짧은 입력 필드는 예산을 초과하면 실패한다. 셀 내부 문단은 셀 예산으로 검사하므로 빈 칸 입력이 가능하다.
+
+### 전체 구조 fingerprint 가드 규칙
+
+`page_guard.py --write-structure`는 원본 양식에서 다음을 저장한다.
+
+- ZIP 패키지 파일 목록과 순서
+- 각 엔트리의 압축 방식, 날짜, 생성 시스템, 버전, flag bits, 외부/내부 속성
+- 바이너리/부속 파일의 SHA-256 해시
+- 모든 XML 파일의 태그명, 속성, 계층, 자식 순서
+- `hp:t`의 직접 텍스트와 `hp:t` 하위 컨트롤의 tail 텍스트는 입력값으로 보고 제외
+- `hp:t` 내부의 `hp:fwSpace`, `hp:lineBreak` 같은 자식 컨트롤 태그/순서는 구조 fingerprint에 포함
+- `hp:linesegarray`는 줄 배치 캐시로 보고 구조 fingerprint에서 제외
+
+결과 검증 시 `--structure-profile`을 반드시 사용한다. `hp:t` 텍스트 입력과 `hp:linesegarray` 캐시 제거를 제외한 태그/속성/파일/이미지/메타 구조가 바뀌면 실패한다. 특히 `hp:t` 내부 컨트롤이 삭제되면 손상 가능성이 높으므로 실패해야 한다.
+
+ZIP 엔트리의 `flag_bits`도 원본과 같아야 한다. Python `zipfile.writestr()`로 전체 엔트리를 다시 쓰면 `flag_bits`와 압축 바이트가 바뀔 수 있으므로 사용하지 않는다. 반드시 원시 ZIP 복사 방식으로 변경 대상 엔트리만 교체한다.
+
+`edit_hwpx.py`는 기본적으로 입력 전 글자수 예산과 기본 문장 품질을 검사한다. `--paragraph` 값은 원본 문단 예산 이하여야 하고, `--cell` 값은 원본 셀 예산을 넘으면 안 된다. `--replace`의 새 값이 기존 자리보다 길면 쓰기 전에 실패한다. `--allow-over-budget`은 사용자가 명시적으로 위험을 감수할 때만 쓴다.
+
+### 내용 완성도 가드 규칙
+
+`content_guard.py`는 문서가 열리는지와 무관하게 결과 텍스트가 작업 의도와 일치하는지 검사한다. 다음 경우에는 반드시 규칙 파일을 만들어 실행한다.
+
+- 문서의 기관/국가/회사/브랜드를 바꾸는 경우: 이전 명칭, 이전 담당자, 이전 전화번호, 이전 정책명을 `forbid`에 넣는다.
+- 양식 placeholder를 채우는 경우: `○○`, `{{name}}`, `... . .` 같은 잔여 placeholder를 금지한다.
+- 새 문서 관점의 핵심어가 반드시 있어야 하는 경우: 새 기관명, 새 법인명, 새 담당 부서 등을 `require`에 넣는다.
+- 여러 붙임/참고/담당자 표가 있는 문서에서는 앞부분만 바꾸지 말고 전체 텍스트 추출 결과에 대해 `content_guard.py`를 실행한다.
+- “내용을 싹 바꾸라”, “미국에서 작성한 것처럼 바꾸라”처럼 전면 재작성 요청이면 `--reference`와 `--max-unchanged-ratio`를 함께 사용한다. 원본의 긴 문장이 많이 남으면 구조가 정상이어도 실패다.
+
+예시:
+
+```json
+{
+  "require": ["미국노동부", "좋은 일자리"],
+  "forbid": ["고용노동부", "김영훈", "최영범", "장지훈", "044-"],
+  "forbid_regex": ["○○+", "\\(\\s*\\.\\s*\\.\\s*\\.\\s*\\)"]
+}
+```
+
+`content_guard.py`가 실패하면 구조가 아무리 정상이어도 결과를 완료로 제출하지 않는다. 실패 목록을 보고 남은 슬롯을 추가 수정하거나, 문서 전체 재작성 범위를 넓힌 뒤 다시 빌드한다.
 
 ## 환경
 
@@ -91,6 +234,7 @@ source "$VENV"
 │   │   ├── unpack.py                     # HWPX → 디렉토리 (XML pretty-print)
 │   │   └── pack.py                       # 디렉토리 → HWPX
 │   ├── build_hwpx.py                     # 템플릿 + XML → .hwpx 조립 (핵심)
+│   ├── edit_hwpx.py                      # 원본 패키지 보존 + 텍스트/셀 최소 수정
 │   ├── analyze_template.py               # HWPX 심층 분석 (레퍼런스 기반 생성용)
 │   ├── validate.py                       # HWPX 구조 검증
 │   ├── page_guard.py                     # 레퍼런스 대비 페이지 드리프트 위험 검사
