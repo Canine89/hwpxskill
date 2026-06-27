@@ -15,9 +15,16 @@ OWPML 표준 XML을 직접 다루기 때문에 charPr, paraPr 단위로 서식�
 - 기존 HWPX 양식을 그대로 쓰는 `edit_hwpx.py` 편집 경로를 강화했습니다. 일반 ZIP 재압축 대신 원본 로컬 헤더와 압축 데이터를 보존하고, 변경된 `Contents/section0.xml`만 교체합니다.
 - `hwpx_slots.py`를 추가해 편집 가능한 문단/표 셀 슬롯을 먼저 추출하고 `--slot-json`으로 채우는 흐름을 지원합니다. 표, 그림, 텍스트상자 컨테이너 문단은 직접 수정하지 않습니다.
 - 텍스트 수정 문단의 `hp:linesegarray` 줄 배치 캐시는 제거해 한컴의 손상/변조 경고 가능성을 줄입니다.
+- `finalize_hwpx.py`를 추가해 줄 배치 캐시 제거, 표 셀 밀도, 제목 다음 본문 들여쓰기 같은 레이아웃 위험을 점검합니다. 이 도구도 원본 ZIP 메타데이터를 최대한 보존하며 필요한 XML 엔트리만 교체합니다.
+- `fix_namespaces.py`를 추가해 `ns0` 같은 자동 네임스페이스 프리픽스를 `hh/hc/hp/hs` 표준 프리픽스로 정리하고 `header.xml`의 `itemCnt`를 보정합니다.
+- `gonmun_lint.py`를 추가해 공문서 날짜, 시간, 금액, 붙임, 외국어 병기 표기 오류를 빠르게 검사합니다.
 - 문단 전체 재작성 시 원본의 볼드/색상 강조가 새 문장에 섞이지 않도록 `header.xml`의 `charPr`를 분석합니다. 첫 run이나 10pt에 가까운 run을 무조건 고르지 않고, 해당 문단에서 가장 많이 쓰인 본문 글자 높이에 가까운 비강조 run을 선택합니다.
 - `content_guard.py`를 추가해 구조 검증만으로 잡히지 않는 원문 잔재, placeholder, 필수 키워드 누락, 전면 재작성 시 원본 문장 과다 잔존을 검사합니다.
 - `page_guard.py`는 문단/셀별 글자 예산과 XML 구조 fingerprint를 함께 비교합니다. `hp:t` 내부 컨트롤은 보존하고, `hp:linesegarray` 제거는 허용합니다.
+
+## 참고한 프로젝트
+
+이 저장소는 [`jkf87/hwpx-skill`](https://github.com/jkf87/hwpx-skill)의 최종화/검수 흐름과 문서화 방식을 참고해 보완했습니다. 특히 네임스페이스 보정, 줄 배치 캐시 제거, 레이아웃 위험 경고, 공문서 표기 검수 아이디어를 참고했고, 구현은 이 저장소의 원본 ZIP 메타데이터 보존 원칙에 맞춰 재구성했습니다. 자세한 비교 메모는 [`references/jkf87-hwpx-skill-comparison.md`](references/jkf87-hwpx-skill-comparison.md)에 정리했습니다.
 
 ## 설치
 
@@ -99,6 +106,9 @@ python3 scripts/edit_hwpx.py reference.hwpx \
   --slot-json values.json
 
 python3 scripts/validate.py filled.hwpx
+python3 scripts/fix_namespaces.py filled.hwpx
+python3 scripts/finalize_hwpx.py filled.hwpx --strip-linesegarray --layout
+python3 scripts/validate.py filled.hwpx --layout
 python3 scripts/page_guard.py \
   --reference reference.hwpx \
   --output filled.hwpx \
@@ -144,6 +154,12 @@ python3 scripts/page_guard.py \
 구조 검사를 통과해도 원문 기관명, 담당자, 전화번호, `○○` placeholder가 남아 있으면 실무 결과물이 아닙니다. 그런 경우 `content_guard.py`로 금지어와 필수어를 검사합니다. 예를 들어 보도자료를 미국노동부 문서로 바꿨다면 `고용노동부`, 기존 담당자명, `044-` 연락처를 금지하고 `미국노동부`를 필수어로 둡니다.
 
 문서 전체 관점 전환이나 전면 재작성이라면 `--reference`와 `--max-unchanged-ratio`도 같이 씁니다. 원본의 긴 문장이 많이 남은 결과물은 구조가 정상이더라도 실패로 봅니다.
+
+공문서 표기 자체를 점검해야 하면 `gonmun_lint.py`를 추가로 실행합니다.
+
+```bash
+python3 scripts/gonmun_lint.py --hwpx filled.hwpx --format text
+```
 
 `edit_hwpx.py`는 새 ZIP을 일반 재압축하지 않고 원본 ZIP의 로컬 헤더와 압축 데이터를 복사합니다. 변경 대상인 `Contents/section0.xml`만 교체하고, 나머지 엔트리는 CRC, compressed size, flag bits, 날짜, 속성까지 원본과 같게 유지합니다. `section0.xml`도 원본 XML 선언과 줄바꿈 관습을 최대한 유지합니다.
 
@@ -232,7 +248,11 @@ python3 -m unittest tests/test_hwpx_guards.py
 | `office/unpack.py` | HWPX를 디렉토리로 풀기, 기본값은 XML 바이트 보존 |
 | `office/pack.py` | 디렉토리를 HWPX로 묶기 |
 | `validate.py` | HWPX 구조, manifest, 이미지 참조 검증 |
+| `fix_namespaces.py` | 표준 네임스페이스 프리픽스와 header itemCnt 보정 |
+| `finalize_hwpx.py` | 줄 배치 캐시 제거, 레이아웃 위험 경고, Windows Hancom 열림 검사 |
 | `page_guard.py` | 원본 대비 페이지 드리프트 위험 감지, 문단/셀별 글자 예산 검증 |
+| `content_guard.py` | 원문 잔재, placeholder, 필수 키워드 누락 검사 |
+| `gonmun_lint.py` | 공문서 날짜/시간/금액/붙임 표기 검수 |
 | `text_extract.py` | XML 직접 파싱 기반 텍스트 추출 |
 
 ## 자세한 사용법

@@ -1,12 +1,22 @@
 ---
 name: hwpx
-description: "한글(HWPX) 문서 생성/읽기/편집 스킬. .hwpx 파일, 한글 문서, Hancom, OWPML 관련 요청 시 사용."
+description: "한글 HWPX 문서 생성/읽기/편집 스킬. .hwpx 파일, Hancom, OWPML 관련 요청 시 사용. .hwp 바이너리 파일 작성/생성/직접 편집 요청은 거부한다."
 ---
 
 # HWPX 문서 스킬 — 레퍼런스 복원 우선(XML-first) 워크플로우
 
 한글(Hancom Office)의 HWPX 파일을 **XML 직접 작성** 중심으로 생성, 편집, 읽기할 수 있는 스킬.
 HWPX는 ZIP 기반 XML 컨테이너(OWPML 표준)이다. 서식 보존이 중요한 편집에서는 OWPML XML을 직접 다뤄 charPr, paraPr, 표 구조를 세밀하게 제어한다.
+
+## HWP 바이너리 요청 거부 규칙 (필수)
+
+이 스킬은 **HWPX 전용**이다. 사용자가 `.hwp` 바이너리 파일의 작성, 생성, 저장, 편집, 채우기, 변환 결과물 생성을 요청하면 해당 작업은 수행하지 않는다.
+
+- `.hwp`로 결과 파일을 만들어 달라는 요청은 거부한다.
+- `.hwp` 원본을 직접 수정하거나 채워 달라는 요청은 거부한다.
+- `.hwp`를 읽어 참고하는 수준은 가능하지만, 결과물은 사용자가 명시적으로 HWPX를 허용한 경우에만 `.hwpx`로 만든다.
+- 사용자가 `.hwp` 작성을 요청했는데 HWPX 대체 산출물을 명시적으로 허용하지 않았다면, 임의로 `.hwpx` 파일을 만들어 대신 완료 처리하지 않는다.
+- 안내 문구는 간단히 쓴다: "이 스킬은 HWPX만 지원해서 .hwp 작성은 할 수 없습니다. 한글에서 HWPX로 저장한 파일을 주거나, 결과물을 .hwpx로 받는 방식이면 처리할 수 있습니다."
 
 ## 기본 동작 모드 (필수): 첨부 HWPX 분석 → 고유 XML 복원(99% 근접) → 요청 반영 재작성
 
@@ -17,8 +27,9 @@ HWPX는 ZIP 기반 XML 컨테이너(OWPML 표준)이다. 서식 보존이 중요
 3. **사용자 값 매핑**: 슬롯 키(`p:12`, `cell:0:2:1`)에 새 값을 매핑한다
 4. **구조 보존 편집**: `edit_hwpx.py --slot-json`으로 원본 패키지를 복제하고 슬롯 텍스트만 수정
 5. **빌드/검증**: `edit_hwpx.py` 결과 또는 `build_hwpx.py` 결과를 `validate.py`로 무결성 확인
-6. **글자 예산/쪽수 가드(필수)**: `page_guard.py`로 문단/셀별 글자 예산과 레퍼런스 대비 페이지 드리프트 위험 검사
-7. **내용 완성도 가드(필수)**: `content_guard.py`로 원문 잔재, placeholder, 필수 키워드 누락을 검사한다
+6. **최종화/레이아웃 경고**: `fix_namespaces.py`, `finalize_hwpx.py --strip-linesegarray --layout`, `validate.py --layout`로 네임스페이스와 렌더링 위험을 점검한다
+7. **글자 예산/쪽수 가드(필수)**: `page_guard.py`로 문단/셀별 글자 예산과 레퍼런스 대비 페이지 드리프트 위험 검사
+8. **내용 완성도 가드(필수)**: `content_guard.py`로 원문 잔재, placeholder, 필수 키워드 누락을 검사한다
 
 ### 99% 근접 복원 기준 (실무 체크리스트)
 
@@ -73,8 +84,11 @@ python3 "$SKILL_DIR/scripts/edit_hwpx.py" reference.hwpx \
   --output result.hwpx \
   --slot-json values.json
 
-# 5) 검증
+# 5) 검증 + 최종화
 python3 "$SKILL_DIR/scripts/validate.py" result.hwpx
+python3 "$SKILL_DIR/scripts/fix_namespaces.py" result.hwpx
+python3 "$SKILL_DIR/scripts/finalize_hwpx.py" result.hwpx --strip-linesegarray --layout
+python3 "$SKILL_DIR/scripts/validate.py" result.hwpx --layout
 
 # 6) 글자 예산 + 쪽수 드리프트 가드 (필수)
 python3 "$SKILL_DIR/scripts/page_guard.py" \
@@ -95,6 +109,9 @@ python3 "$SKILL_DIR/scripts/content_guard.py" result.hwpx \
   --reference reference.hwpx \
   --rules /tmp/content.rules.json \
   --max-unchanged-ratio 0.35
+
+# 공문서라면 날짜/시간/금액/붙임 표기도 점검
+python3 "$SKILL_DIR/scripts/gonmun_lint.py" --hwpx result.hwpx --format text
 ```
 
 `hwpx_slots.py`는 표/그림/텍스트상자를 품은 컨테이너 문단을 제외하고, 실제 편집 가능한 문단과 표 셀을 슬롯으로 노출한다. 사용자는 슬롯 키에 값만 넣으면 된다.
@@ -237,7 +254,11 @@ source "$VENV"
 │   ├── edit_hwpx.py                      # 원본 패키지 보존 + 텍스트/셀 최소 수정
 │   ├── analyze_template.py               # HWPX 심층 분석 (레퍼런스 기반 생성용)
 │   ├── validate.py                       # HWPX 구조 검증
+│   ├── fix_namespaces.py                 # 표준 네임스페이스 프리픽스/header itemCnt 보정
+│   ├── finalize_hwpx.py                  # 줄 배치 캐시 제거 + 레이아웃 위험 경고
 │   ├── page_guard.py                     # 레퍼런스 대비 페이지 드리프트 위험 검사
+│   ├── content_guard.py                  # 원문 잔재/placeholder/필수 키워드 검사
+│   ├── gonmun_lint.py                    # 공문서 날짜/시간/금액/붙임 표기 검수
 │   └── text_extract.py                   # 텍스트 추출
 ├── templates/
 │   ├── base/                             # 베이스 템플릿 (Skeleton 기반)
@@ -698,7 +719,11 @@ python3 "$SKILL_DIR/scripts/page_guard.py" \
 | `scripts/office/unpack.py` | HWPX → 디렉토리 (기본 XML 바이트 보존, `--pretty`는 검사 전용) |
 | `scripts/office/pack.py` | 디렉토리 → HWPX (mimetype first) |
 | `scripts/validate.py` | HWPX 파일 구조 검증 |
+| `scripts/fix_namespaces.py` | 표준 네임스페이스 프리픽스와 header itemCnt 보정 |
+| `scripts/finalize_hwpx.py` | 줄 배치 캐시 제거, 레이아웃 위험 경고, Windows Hancom 열림 검사 |
 | `scripts/page_guard.py` | 레퍼런스 대비 페이지 드리프트 위험 검사 (필수 게이트) |
+| `scripts/content_guard.py` | 원문 잔재, placeholder, 필수 키워드 누락 검사 |
+| `scripts/gonmun_lint.py` | 공문서 날짜/시간/금액/붙임 표기 검수 |
 | `scripts/text_extract.py` | HWPX 텍스트 추출 |
 
 ## 단위 변환
@@ -716,7 +741,7 @@ python3 "$SKILL_DIR/scripts/page_guard.py" \
 
 ## Critical Rules
 
-1. **HWPX만 지원**: `.hwp`(바이너리) 파일은 지원하지 않는다. 사용자가 `.hwp` 파일을 제공하면 **한글 오피스에서 `.hwpx`로 다시 저장**하도록 안내할 것. (파일 → 다른 이름으로 저장 → 파일 형식: HWPX)
+1. **HWPX만 지원 / HWP 작성 거부**: `.hwp`(바이너리) 파일 작성, 생성, 저장, 직접 편집, 채우기 요청은 거부한다. 사용자가 명시적으로 HWPX 대체 산출물을 허용한 경우에만 `.hwpx`로 작업한다. 사용자가 `.hwp` 파일을 제공하면 **한글 오피스에서 `.hwpx`로 다시 저장**하도록 안내할 것. (파일 → 다른 이름으로 저장 → 파일 형식: HWPX)
 2. **secPr 필수**: section0.xml 첫 문단의 첫 run에 반드시 secPr + colPr 포함
 3. **mimetype 순서**: HWPX 패키징 시 mimetype은 첫 번째 ZIP 엔트리, ZIP_STORED
 4. **네임스페이스 보존**: XML 편집 시 `hp:`, `hs:`, `hh:`, `hc:` 접두사 유지

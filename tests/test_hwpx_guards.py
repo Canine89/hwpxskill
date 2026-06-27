@@ -17,6 +17,9 @@ sys.path.insert(0, str(SCRIPTS))
 
 import edit_hwpx  # noqa: E402
 import content_guard  # noqa: E402
+import finalize_hwpx  # noqa: E402
+import fix_namespaces  # noqa: E402
+import gonmun_lint  # noqa: E402
 import page_guard  # noqa: E402
 from office import pack as office_pack  # noqa: E402
 from office import unpack as office_unpack  # noqa: E402
@@ -62,6 +65,81 @@ class HwpxGuardTests(unittest.TestCase):
             office_pack.pack(str(unpacked), str(repacked))
             with ZipFile(repacked, "r") as zf:
                 self.assertEqual(section, zf.read("Contents/section0.xml"))
+
+    def test_finalize_strips_linesegarray_preserving_unmodified_entries(self) -> None:
+        section = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" '
+            b'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+            b'<hp:p><hp:run><hp:t>text</hp:t></hp:run>'
+            b'<hp:linesegarray><hp:lineseg textpos="0"/></hp:linesegarray></hp:p>'
+            b'</hs:sec>'
+        )
+        header = b'<?xml version="1.0" encoding="UTF-8"?><hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"/>'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.hwpx"
+            out = Path(tmp) / "out.hwpx"
+            with ZipFile(source, "w") as zf:
+                zf.writestr("mimetype", b"application/hwp+zip")
+                zf.writestr("Contents/header.xml", header)
+                zf.writestr("Contents/section0.xml", section)
+
+            before = page_guard.collect_structure_profile(source)
+            removed = finalize_hwpx.strip_linesegarray(source, out)
+            after = page_guard.collect_structure_profile(out)
+
+            self.assertEqual(1, removed)
+            with ZipFile(out, "r") as zf:
+                self.assertNotIn(b"linesegarray", zf.read("Contents/section0.xml"))
+                self.assertEqual(header, zf.read("Contents/header.xml"))
+            self.assertEqual([], page_guard.compare_structure_profile(before, after))
+
+    def test_fix_namespaces_updates_prefixes_and_header_counts(self) -> None:
+        header = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<ns0:head xmlns:ns0="http://www.hancom.co.kr/hwpml/2011/head">'
+            b'<ns0:charProperties itemCnt="1">'
+            b'<ns0:charPr id="0"/><ns0:charPr id="1"/>'
+            b'</ns0:charProperties>'
+            b'</ns0:head>'
+        )
+        section = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<ns1:sec xmlns:ns1="http://www.hancom.co.kr/hwpml/2011/section" '
+            b'xmlns:ns2="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+            b'<ns2:p><ns2:run><ns2:t>text</ns2:t></ns2:run></ns2:p>'
+            b'</ns1:sec>'
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.hwpx"
+            out = Path(tmp) / "out.hwpx"
+            with ZipFile(source, "w") as zf:
+                zf.writestr("mimetype", b"application/hwp+zip")
+                zf.writestr("Contents/header.xml", header)
+                zf.writestr("Contents/section0.xml", section)
+
+            changed = fix_namespaces.fix_hwpx_namespaces(source, out)
+
+            self.assertEqual(2, changed)
+            with ZipFile(out, "r") as zf:
+                fixed_header = zf.read("Contents/header.xml").decode("utf-8")
+                fixed_section = zf.read("Contents/section0.xml").decode("utf-8")
+            self.assertIn("xmlns:hh=", fixed_header)
+            self.assertIn('itemCnt="2"', fixed_header)
+            self.assertIn("xmlns:hs=", fixed_section)
+            self.assertIn("<hp:p>", fixed_section)
+
+    def test_gonmun_lint_detects_common_style_errors(self) -> None:
+        result = gonmun_lint.lint_text("2025.01.06 오후 3시 붙임: 계획 1부")
+        summary = result["summary"]
+        self.assertIsInstance(summary, dict)
+        self.assertFalse(summary["ok"])
+        rules = {finding["rule"] for finding in result["findings"]}
+        self.assertIn("DATE_NO_SPACE", rules)
+        self.assertIn("TIME_AMPM", rules)
+        self.assertIn("BUNIM_COLON", rules)
 
     def test_section_xml_noop_roundtrip_is_byte_identical(self) -> None:
         with ZipFile(FIXTURE, "r") as zf:

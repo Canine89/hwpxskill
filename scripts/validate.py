@@ -123,6 +123,11 @@ def main() -> None:
         description="Validate the structural integrity of an HWPX file"
     )
     parser.add_argument("input", help="Path to .hwpx file")
+    parser.add_argument(
+        "--layout",
+        action="store_true",
+        help="Also report layout risk warnings from finalize_hwpx.py",
+    )
     args = parser.parse_args()
 
     errors = validate(args.input)
@@ -135,6 +140,25 @@ def main() -> None:
     else:
         print(f"VALID: {args.input}")
         print(f"  All structural checks passed.")
+        if args.layout:
+            from finalize_hwpx import find_layout_warnings
+
+            warnings = find_layout_warnings(args.input)
+            if warnings:
+                print(f"  Layout warnings: {len(warnings)}")
+                for warning in warnings[:30]:
+                    location = ""
+                    if "table" in warning:
+                        location = (
+                            f" table={warning['table']}"
+                            f" row={warning['row']}"
+                            f" col={warning['col']}"
+                        )
+                    print(f"  - {warning['type']}{location}: {warning['message']}")
+                if len(warnings) > 30:
+                    print(f"  - ... {len(warnings) - 30} more")
+            else:
+                print("  Layout warnings: 0")
 
 
 if __name__ == "__main__":
